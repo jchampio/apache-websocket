@@ -1,0 +1,1 @@
+LoadModule websocket_module @APACHE_MODULE_DIR@/mod_websocket.so
