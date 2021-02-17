@@ -43,6 +43,7 @@
 #include "util_varbuf.h"
 
 #include "websocket_plugin.h"
+#include "mod_websocket_hook_export.h"
 #include "validate_utf8.h"
 
 #define CORE_PRIVATE
@@ -130,6 +131,10 @@ static int supported_versions[] = { 13, 8, 7 };
 static int supported_versions_len = sizeof(supported_versions) /
                                     sizeof(supported_versions[0]);
 
+/* Provided hooks */
+/* We want to stop if one plugin accepts, but *_RUN_FIRST does not exist for optional hooks, so set both ok and declined to DECLINED */
+AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,websocket_plugin_init,(const char* name, struct _WebSocketPlugin** plugin),(name, plugin),DECLINED,DECLINED)
+
 /*
  * Configuration
  */
@@ -196,22 +201,27 @@ static const char *mod_websocket_conf_handler(cmd_parms *cmd, void *confv,
     }
 
     if (apr_dso_load(&res_handle, ap_server_root_relative(cmd->pool, path),
-                     cmd->pool) != APR_SUCCESS) {
-        char err[256];
-        return apr_pstrcat(cmd->pool, "Could not load WebSocketHandler ", path,
-                           ": ", apr_dso_error(res_handle, err, sizeof(err)),
-                           NULL);
+                     cmd->pool) == APR_SUCCESS) {
+        if ((apr_dso_sym(&sym, res_handle, name) != APR_SUCCESS) || !sym) {
+            apr_dso_unload(res_handle);
+            return apr_psprintf(cmd->pool, "Could not find initialization function "
+                                             "\"%s\" for WebSocketHandler %s", name, path);
+        } else {
+            /* Get the plugin struct from the module. */
+            plugin = ((WS_Init) sym) ();
+        }
+    } else {
+        /* dso could not be loaded, check if it is a apache plugin */
+        if(strcmp(path, "internal")
+            || ap_run_websocket_plugin_init(name, &plugin) != OK) {
+            char err[256];
+            return apr_pstrcat(cmd->pool, "Could not load WebSocketHandler ", path,
+                            ": ", apr_dso_error(res_handle, err, sizeof(err)),
+                            NULL);
+        }
     }
 
-    if ((apr_dso_sym(&sym, res_handle, name) != APR_SUCCESS) || !sym) {
-        apr_dso_unload(res_handle);
-        return apr_psprintf(cmd->pool, "Could not find initialization function "
-                            "\"%s\" for WebSocketHandler %s", name, path);
-    }
-
-    /* Get the plugin struct from the module and sanity-check. */
-    plugin = ((WS_Init) sym) ();
-
+    /* Do a sanity check on the returned plugin struct */
     if (!plugin) {
         errmsg = "returned NULL";
     }
